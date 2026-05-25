@@ -101,6 +101,14 @@ func TargetEnvironment(env []string, identity TargetIdentity) []string {
 	return cleaned
 }
 
+func TargetEnvironmentWithPath(env []string, identity TargetIdentity, targetPath string) []string {
+	cleaned := TargetEnvironment(env, identity)
+	if targetPath == "" {
+		return cleaned
+	}
+	return setEnv(cleaned, "PATH", targetPath)
+}
+
 func setEnv(env []string, key, value string) []string {
 	if value == "" {
 		return env

@@ -14,6 +14,7 @@ type Config struct {
 	DNS             string
 	MTU             int
 	LogLevel        string
+	TargetPath      string
 	Keep            bool
 	Verbose         bool
 }

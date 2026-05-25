@@ -25,8 +25,7 @@ func ElevateWithSudo(originalArgs []string, proxyURL string) error {
 	}
 	defer os.Remove(proxyFile)
 
-	args := []string{exe, "_sudo", "-proxy-file", proxyFile, "--"}
-	args = append(args, originalArgs...)
+	args := sudoCommandArgs(exe, proxyFile, originalArgs, os.Getenv("PATH"))
 
 	cmd := exec.Command("sudo", args...)
 	cmd.Stdin = os.Stdin
@@ -48,6 +47,16 @@ func ElevateWithSudo(originalArgs []string, proxyURL string) error {
 		}
 	}
 	return err
+}
+
+func sudoCommandArgs(exe, proxyFile string, originalArgs []string, targetPath string) []string {
+	args := []string{exe, "_sudo", "-proxy-file", proxyFile}
+	if targetPath != "" {
+		args = append(args, "-target-path", targetPath)
+	}
+	args = append(args, "--")
+	args = append(args, originalArgs...)
+	return args
 }
 
 func writeProxyFile(proxyURL string) (string, error) {

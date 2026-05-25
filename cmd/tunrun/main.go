@@ -39,14 +39,15 @@ func run(args []string) error {
 		return runSudo(args[1:])
 	}
 
-	return runMain(args, "", "", true)
+	return runMain(args, "", "", "", true)
 }
 
-func runMain(args []string, proxyOverride, proxyOverrideSource string, allowElevate bool) error {
+func runMain(args []string, proxyOverride, proxyOverrideSource, targetPath string, allowElevate bool) error {
 	fs := flag.NewFlagSet("tunrun", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
 	var cfg tunrun.Config
+	cfg.TargetPath = targetPath
 	fs.StringVar(&cfg.ProxyURL, "proxy", "", "upstream proxy URL; defaults to proxy environment variables")
 	fs.StringVar(&cfg.Namespace, "ns", "", "network namespace name; default tunrun-<pid>")
 	fs.StringVar(&cfg.TunName, "tun", "tun0", "TUN interface name inside the namespace")
@@ -118,7 +119,9 @@ func runSudo(args []string) error {
 	fs.SetOutput(os.Stderr)
 
 	var proxyFile string
+	var targetPath string
 	fs.StringVar(&proxyFile, "proxy-file", "", "proxy URL file")
+	fs.StringVar(&targetPath, "target-path", "", "target command PATH captured before sudo")
 	if err := fs.Parse(args); err != nil {
 		return tunrun.ExitError{Code: 2}
 	}
@@ -130,7 +133,7 @@ func runSudo(args []string) error {
 	if err != nil {
 		return err
 	}
-	return runMain(fs.Args(), proxyURL, "environment before sudo", false)
+	return runMain(fs.Args(), proxyURL, "environment before sudo", targetPath, false)
 }
 
 func runEngine(args []string) error {

@@ -175,7 +175,7 @@ func (r *Runner) runCommand(ctx context.Context, args []string, identity TargetI
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = TargetEnvironment(os.Environ(), identity)
+	cmd.Env = TargetEnvironmentWithPath(os.Environ(), identity, r.cfg.TargetPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {

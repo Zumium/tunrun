@@ -79,3 +79,34 @@ func TestTargetEnvironment(t *testing.T) {
 		}
 	}
 }
+
+func TestTargetEnvironmentWithPathRestoresCallerPath(t *testing.T) {
+	got := TargetEnvironmentWithPath([]string{
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin",
+		"HTTP_PROXY=http://127.0.0.1:7890",
+		"SUDO_UID=1000",
+		"SUDO_GID=1000",
+		"HOME=/root",
+		"USER=root",
+	}, TargetIdentity{
+		Valid:    true,
+		Username: "alice",
+		HomeDir:  "/home/alice",
+		Shell:    "/bin/bash",
+	}, "/home/alice/.local/bin:/usr/local/bin:/usr/bin")
+	want := []string{
+		"PATH=/home/alice/.local/bin:/usr/local/bin:/usr/bin",
+		"HOME=/home/alice",
+		"USER=alice",
+		"LOGNAME=alice",
+		"SHELL=/bin/bash",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	}
+}

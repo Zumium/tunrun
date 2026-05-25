@@ -5,10 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/netip"
 	"os"
 	"os/exec"
-	"strings"
 	"syscall"
 	"time"
 
@@ -62,18 +60,9 @@ func RunNetMgr(ctx context.Context, cfg NetMgrConfig, command []string) int {
 			return 1
 		}
 	}
-	aliases, err := setupResolverLoopbackAliases("/etc/resolv.conf")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "tunrun netmgr: configure resolver aliases: %v\n", err)
-		return 1
-	}
-	if cfg.Verbose && len(aliases) > 0 {
-		fmt.Fprintf(os.Stderr, "tunrun netmgr: dns_resolver_aliases=%s\n", strings.Join(aliases, ","))
-	}
-	dnsListenHost := "127.0.0.1"
-	if len(aliases) > 0 {
-		dnsListenHost = aliases[0]
-	}
+	// DNS proxy listens on loopback; nftables DNAT redirects all dport-53
+	// traffic here and conntrack transparently rewrites reply source IPs.
+	const dnsListenHost = "127.0.0.1"
 
 	peerLink, _ := netlink.LinkByName(cfg.PeerIf)
 	if err := netlink.LinkSetName(peerLink, cfg.NsIf); err != nil {
@@ -236,43 +225,4 @@ func RunNetMgr(ctx context.Context, cfg NetMgrConfig, command []string) int {
 	}
 	fmt.Fprintf(os.Stderr, "tunrun netmgr: command failed: %v\n", err)
 	return 1
-}
-
-func setupResolverLoopbackAliases(resolvPath string) ([]string, error) {
-	nameservers, err := readResolvConfNameservers(resolvPath)
-	if err != nil {
-		return nil, err
-	}
-
-	lo, err := netlink.LinkByName("lo")
-	if err != nil {
-		return nil, err
-	}
-
-	aliases := make([]string, 0, len(nameservers))
-	for _, addr := range nameservers {
-		if !addr.Is4() || addr.IsLoopback() || addr.IsUnspecified() {
-			continue
-		}
-		if err := addLoopbackIPv4Alias(lo, addr); err != nil {
-			return nil, fmt.Errorf("add %s to loopback: %w", addr, err)
-		}
-		aliases = append(aliases, addr.String())
-	}
-	return aliases, nil
-}
-
-func addLoopbackIPv4Alias(link netlink.Link, addr netip.Addr) error {
-	ip := net.IP(append([]byte(nil), addr.AsSlice()...))
-	err := netlink.AddrAdd(link, &netlink.Addr{
-		IPNet: &net.IPNet{
-			IP:   ip,
-			Mask: net.CIDRMask(32, 32),
-		},
-		Scope: int(netlink.SCOPE_HOST),
-	})
-	if errors.Is(err, syscall.EEXIST) {
-		return nil
-	}
-	return err
 }

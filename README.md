@@ -7,7 +7,7 @@ It is a single Go binary. It creates:
 
 - a dedicated network namespace for the app
 - a veth link between the host and that namespace
-- a host-side TCP relay to your upstream HTTP or SOCKS5 proxy
+- a host-side relay to your upstream HTTP or SOCKS5 proxy
 - an embedded tun2socks engine inside the namespace
 
 The app sees a normal network stack whose default route points at the TUN
@@ -62,18 +62,17 @@ sudo ./tunrun -keep -proxy socks5://127.0.0.1:1080 -- bash
 ## Cleanup
 
 By default, `tunrun` cleans up after the target command exits. It stops the
-embedded engine, closes the DNS proxy and TCP relay, removes the namespace
+embedded engine, closes the DNS proxy and host relay, removes the namespace
 `resolv.conf`, deletes the network namespace, and removes the host veth link.
 
 Use `-keep` only when you want to inspect the namespace after exit.
 
 ## Current scope
 
-The first version targets TCP applications plus DNS. `tunrun` writes a
+`tunrun` targets TCP applications plus DNS, and generic UDP is supported when
+the upstream proxy is SOCKS5 and permits UDP ASSOCIATE. It writes a
 namespace-specific `resolv.conf` and runs a small DNS-over-TCP proxy on the host
 veth address, so DNS queries are also resolved through the configured proxy.
-Generic UDP traffic is not wired through the host relay yet.
 
-That means browsers, `curl`, `wget`, package manager downloads, and many CLI
-tools are the intended first workload. QUIC-heavy apps may need QUIC disabled or
-future UDP support.
+HTTP proxies still cover TCP plus DNS only because plain HTTP CONNECT does not
+provide a generic UDP relay.

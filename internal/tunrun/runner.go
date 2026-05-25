@@ -91,7 +91,7 @@ func (r *Runner) Run(ctx context.Context, command []string) error {
 	}
 
 	var relayPort int
-	relay, relayPort, err = StartRelay(netPlan.hostIP, proxy.Host, proxy.Port)
+	relay, relayPort, err = StartRelay(netPlan.hostIP, proxy)
 	if err != nil {
 		return fmt.Errorf("start proxy relay: %w", err)
 	}

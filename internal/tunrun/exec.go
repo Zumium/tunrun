@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 func RunExec(ctx context.Context, cfg ExecConfig, args []string) int {
@@ -15,15 +17,20 @@ func RunExec(ctx context.Context, cfg ExecConfig, args []string) int {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
+
+	attr := &syscall.SysProcAttr{}
+	if _, err := unix.IoctlGetTermios(int(os.Stdin.Fd()), unix.TCGETS); err == nil {
+		attr.Foreground = true
+		attr.Ctty = int(os.Stdin.Fd())
+	}
 	if cfg.UID >= 0 || cfg.GID >= 0 {
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			Credential: &syscall.Credential{
-				Uid:    uint32(cfg.UID),
-				Gid:    uint32(cfg.GID),
-				Groups: cfg.Groups,
-			},
+		attr.Credential = &syscall.Credential{
+			Uid:    uint32(cfg.UID),
+			Gid:    uint32(cfg.GID),
+			Groups: cfg.Groups,
 		}
 	}
+	cmd.SysProcAttr = attr
 
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "tunrun: start target command: %v\n", err)

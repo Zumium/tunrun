@@ -20,12 +20,12 @@ type Proxy struct {
 var ProxyEnvironmentKeys = []string{
 	"ALL_PROXY",
 	"all_proxy",
+	"SOCKS_PROXY",
+	"socks_proxy",
 	"HTTPS_PROXY",
 	"https_proxy",
 	"HTTP_PROXY",
 	"http_proxy",
-	"SOCKS_PROXY",
-	"socks_proxy",
 }
 
 var scrubEnvironmentKeys = append([]string{

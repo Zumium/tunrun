@@ -80,4 +80,5 @@ There should be no `tunrun-*`, `trh*`, or `trp*` leftovers after a normal run.
 ## Current Scope
 
 The first version targets TCP applications plus DNS. Generic UDP forwarding is
-not complete yet, so QUIC-heavy applications may need QUIC disabled.
+supported for SOCKS5 upstream proxies that permit UDP ASSOCIATE; HTTP upstream
+proxies still cover TCP plus DNS only.

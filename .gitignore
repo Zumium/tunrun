@@ -1,0 +1,23 @@
+# Binary
+/tunrun
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# AI agent configs
+.agents/
+.antigravitycli/
+.codex/
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test and coverage
+*.test
+*.out
+coverage.html

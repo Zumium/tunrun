@@ -38,6 +38,9 @@ func run(args []string) error {
 	if len(args) > 0 && args[0] == "_sudo" {
 		return runSudo(args[1:])
 	}
+	if len(args) > 0 && args[0] == "_netmgr" {
+		return runNetMgr(args[1:])
+	}
 
 	return runMain(args, "", "", "", true)
 }
@@ -56,7 +59,6 @@ func runMain(args []string, proxyOverride, proxyOverrideSource, targetPath strin
 	fs.StringVar(&cfg.DNS, "dns", "1.1.1.1:53", "DNS server used over TCP through the proxy")
 	fs.IntVar(&cfg.MTU, "mtu", 1500, "TUN MTU")
 	fs.StringVar(&cfg.LogLevel, "log-level", "warn", "engine log level")
-	fs.BoolVar(&cfg.Keep, "keep", false, "keep namespace after exit")
 	fs.BoolVar(&cfg.Verbose, "v", false, "print lifecycle commands")
 	showVersion := fs.Bool("version", false, "print version")
 
@@ -103,12 +105,12 @@ func runMain(args []string, proxyOverride, proxyOverrideSource, targetPath strin
 		return fmt.Errorf("namespace name must not contain '/'")
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	if os.Geteuid() != 0 && allowElevate {
 		return tunrun.ElevateWithSudo(args, cfg.ProxyURL)
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	runner := tunrun.NewRunner(cfg)
 	return runner.Run(ctx, fs.Args())
@@ -200,7 +202,7 @@ const usage = `Usage:
   tunrun [-proxy socks5://127.0.0.1:1080] -- command [args...]
 
 Examples:
-  ALL_PROXY=socks5://127.0.0.1:1080 sudo -E tunrun -- curl https://ifconfig.me
+  ALL_PROXY=socks5://127.0.0.1:1080 tunrun -- curl https://ifconfig.me
   sudo tunrun -proxy socks5://127.0.0.1:1080 -- curl https://ifconfig.me
   sudo tunrun -proxy http://127.0.0.1:7890 -- wget https://example.com/
 
@@ -210,4 +212,48 @@ Options:
 func init() {
 	// Leave a tiny grace period for child shutdown paths that use SIGTERM.
 	tunrun.ShutdownGrace = 2 * time.Second
+}
+
+func runNetMgr(args []string) error {
+	fs := flag.NewFlagSet("tunrun _netmgr", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	var cfg tunrun.NetMgrConfig
+	var groups string
+	fs.StringVar(&cfg.PeerIf, "peer-if", "", "peer interface name")
+	fs.StringVar(&cfg.NsIf, "ns-if", "", "namespace interface name")
+	fs.StringVar(&cfg.NsCIDR, "ns-cidr", "", "namespace CIDR")
+	fs.StringVar(&cfg.HostIP, "host-ip", "", "host IP")
+	fs.StringVar(&cfg.HostNetNS, "host-netns", "", "host network namespace identity")
+	fs.StringVar(&cfg.DNS, "dns", "", "DNS server")
+	fs.StringVar(&cfg.TunName, "tun", "", "tun name")
+	fs.StringVar(&cfg.TunAddress, "tun-address", "", "tun address")
+	fs.IntVar(&cfg.MTU, "mtu", 1500, "mtu")
+	fs.StringVar(&cfg.LogLevel, "log-level", "warn", "log level")
+	fs.BoolVar(&cfg.Verbose, "v", false, "verbose")
+	fs.StringVar(&cfg.ProxyURL, "proxy", "", "proxy URL")
+	fs.Int64Var(&cfg.UID, "uid", -1, "uid")
+	fs.Int64Var(&cfg.GID, "gid", -1, "gid")
+	fs.StringVar(&groups, "groups", "", "groups")
+	fs.StringVar(&cfg.TargetPath, "target-path", "", "target path")
+
+	if err := fs.Parse(args); err != nil {
+		return tunrun.ExitError{Code: 2}
+	}
+	if cfg.UID >= 0 || cfg.GID >= 0 {
+		parsedGroups, err := tunrun.ParseGroupList(groups)
+		if err != nil {
+			return err
+		}
+		cfg.Groups = parsedGroups
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	code := tunrun.RunNetMgr(ctx, cfg, fs.Args())
+	if code != 0 {
+		return tunrun.ExitError{Code: code}
+	}
+	return nil
 }

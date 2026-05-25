@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,34 +18,46 @@ import (
 
 type DNSServer struct {
 	pc       net.PacketConn
+	ln       net.Listener
 	upstream string
 	proxy    Proxy
+	verbose  bool
 	wg       sync.WaitGroup
 }
 
-func StartDNSServer(listenHost, upstream string, proxy Proxy) (*DNSServer, error) {
+func StartDNSServer(listenHost, upstream string, proxy Proxy, verbose bool) (*DNSServer, error) {
 	host, port, err := ParseDNS(upstream)
 	if err != nil {
 		return nil, err
 	}
 
-	pc, err := net.ListenPacket("udp", net.JoinHostPort(listenHost, "53"))
+	pc, err := net.ListenPacket("udp4", net.JoinHostPort(listenHost, "53"))
 	if err != nil {
+		return nil, err
+	}
+	ln, err := net.Listen("tcp4", net.JoinHostPort(listenHost, "53"))
+	if err != nil {
+		_ = pc.Close()
 		return nil, err
 	}
 
 	s := &DNSServer{
 		pc:       pc,
+		ln:       ln,
 		upstream: net.JoinHostPort(host, strconv.Itoa(port)),
 		proxy:    proxy,
+		verbose:  verbose,
 	}
-	s.wg.Add(1)
-	go s.serve()
+	s.logf("listening udp=%s tcp=%s upstream=%s proxy=%s", pc.LocalAddr(), ln.Addr(), s.upstream, proxy.Address())
+	s.wg.Add(2)
+	go s.serveUDP()
+	go s.serveTCP()
 	return s, nil
 }
 
 func (s *DNSServer) Close(ctx context.Context) error {
 	_ = s.pc.Close()
+	_ = s.ln.Close()
 
 	done := make(chan struct{})
 	go func() {
@@ -60,7 +73,7 @@ func (s *DNSServer) Close(ctx context.Context) error {
 	}
 }
 
-func (s *DNSServer) serve() {
+func (s *DNSServer) serveUDP() {
 	defer s.wg.Done()
 	buf := make([]byte, 4096)
 	for {
@@ -75,11 +88,11 @@ func (s *DNSServer) serve() {
 		query := make([]byte, n)
 		copy(query, buf[:n])
 		s.wg.Add(1)
-		go s.handle(addr, query)
+		go s.handleUDP(addr, query)
 	}
 }
 
-func (s *DNSServer) handle(addr net.Addr, query []byte) {
+func (s *DNSServer) handleUDP(addr net.Addr, query []byte) {
 	defer s.wg.Done()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -90,6 +103,62 @@ func (s *DNSServer) handle(addr net.Addr, query []byte) {
 		return
 	}
 	_, _ = s.pc.WriteTo(resp, addr)
+}
+
+func (s *DNSServer) serveTCP() {
+	defer s.wg.Done()
+	for {
+		conn, err := s.ln.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			continue
+		}
+
+		s.wg.Add(1)
+		go s.handleTCP(conn)
+	}
+}
+
+func (s *DNSServer) handleTCP(conn net.Conn) {
+	defer s.wg.Done()
+	defer conn.Close()
+
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	var hdr [2]byte
+	if _, err := io.ReadFull(conn, hdr[:]); err != nil {
+		return
+	}
+	n := int(binary.BigEndian.Uint16(hdr[:]))
+	if n == 0 {
+		return
+	}
+	query := make([]byte, n)
+	if _, err := io.ReadFull(conn, query); err != nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := exchangeDNS(ctx, s.proxy, s.upstream, query)
+	if err != nil || len(resp) > 65535 {
+		return
+	}
+	binary.BigEndian.PutUint16(hdr[:], uint16(len(resp)))
+	if _, err := conn.Write(hdr[:]); err != nil {
+		return
+	}
+	_, _ = conn.Write(resp)
+}
+
+func (s *DNSServer) logf(format string, args ...any) {
+	if !s.verbose {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "tunrun dns: "+format+"\n", args...)
 }
 
 func exchangeDNS(ctx context.Context, proxy Proxy, upstream string, query []byte) ([]byte, error) {

@@ -52,20 +52,34 @@ func TargetIdentityFromEnvironment(env []string) (TargetIdentity, error) {
 		Groups:   []uint32{uint32(gid64)},
 		Username: values["SUDO_USER"],
 	}
+	identity.Fill()
+	return identity, nil
+}
 
-	u, err := user.LookupId(strconv.FormatUint(uid64, 10))
+func (id *TargetIdentity) Fill() {
+	if !id.Valid {
+		return
+	}
+	u, err := user.LookupId(strconv.FormatUint(uint64(id.UID), 10))
 	if err == nil {
-		identity.Username = shortUsername(u.Username)
-		identity.HomeDir = u.HomeDir
-		identity.Shell = lookupShell(uid64)
-		if groupIDs, groupErr := u.GroupIds(); groupErr == nil {
-			identity.Groups = parseGroupIDs(groupIDs, identity.GID)
+		if id.Username == "" {
+			id.Username = shortUsername(u.Username)
+		}
+		if id.HomeDir == "" {
+			id.HomeDir = u.HomeDir
+		}
+		if id.Shell == "" {
+			id.Shell = lookupShell(uint64(id.UID))
+		}
+		if len(id.Groups) <= 1 {
+			if groupIDs, groupErr := u.GroupIds(); groupErr == nil {
+				id.Groups = parseGroupIDs(groupIDs, id.GID)
+			}
 		}
 	}
-	if identity.Username == "" {
-		identity.Username = strconv.FormatUint(uid64, 10)
+	if id.Username == "" {
+		id.Username = strconv.FormatUint(uint64(id.UID), 10)
 	}
-	return identity, nil
 }
 
 func lookupShell(uid uint64) string {

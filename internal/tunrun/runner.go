@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/vishvananda/netlink"
 )
 
 type Runner struct {
@@ -22,11 +24,7 @@ func NewRunner(cfg Config) *Runner {
 
 func (r *Runner) Run(ctx context.Context, command []string) error {
 	if os.Geteuid() != 0 {
-		return fmt.Errorf("run as root to create network namespaces, write /etc/netns, bind DNS on port 53, and open TUN devices")
-	}
-
-	if _, err := exec.LookPath("ip"); err != nil {
-		return fmt.Errorf("ip command not found: install iproute2")
+		return fmt.Errorf("run as root to create network namespaces, configure nftables DNS redirect rules, bind DNS on port 53, and open TUN devices")
 	}
 
 	proxy, err := ParseProxy(r.cfg.ProxyURL)
@@ -39,56 +37,46 @@ func (r *Runner) Run(ctx context.Context, command []string) error {
 	}
 
 	netPlan := newNamespaceNetwork(r.cfg)
-	if err := setupNamespace(ctx, r.cfg, netPlan); err != nil {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), ShutdownGrace)
-		defer cancel()
-		removeNamespace(cleanupCtx, r.cfg, r.cfg.Namespace)
-		removeLink(cleanupCtx, r.cfg, netPlan.hostIf)
-		removeLink(cleanupCtx, r.cfg, netPlan.peerIf)
-		return err
+
+	// Create host veth
+	veth := &netlink.Veth{
+		LinkAttrs: netlink.LinkAttrs{Name: netPlan.hostIf},
+		PeerName:  netPlan.peerIf,
+	}
+	if err := netlink.LinkAdd(veth); err != nil {
+		return fmt.Errorf("create veth pair: %w", err)
 	}
 
-	var (
-		dnsServer  *DNSServer
-		relay      *Relay
-		engineCmd  *exec.Cmd
-		resolvPath string
-	)
 	defer func() {
-		if engineCmd != nil && engineCmd.Process != nil {
-			terminateProcessGroup(engineCmd.Process)
-			_ = engineCmd.Wait()
+		// Clean up host veth, which automatically cleans up peer veth if it's still around
+		if link, err := netlink.LinkByName(netPlan.hostIf); err == nil {
+			netlink.LinkDel(link)
 		}
+	}()
 
+	addr, err := netlink.ParseAddr(netPlan.hostCIDR)
+	if err != nil {
+		return fmt.Errorf("parse host cidr: %w", err)
+	}
+	hostLink, err := netlink.LinkByName(netPlan.hostIf)
+	if err != nil {
+		return fmt.Errorf("get host link: %w", err)
+	}
+	if err := netlink.AddrAdd(hostLink, addr); err != nil {
+		return fmt.Errorf("configure host veth address: %w", err)
+	}
+	if err := netlink.LinkSetUp(hostLink); err != nil {
+		return fmt.Errorf("bring host veth up: %w", err)
+	}
+
+	var relay *Relay
+	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), ShutdownGrace)
 		defer cancel()
-
 		if relay != nil {
 			_ = relay.Close(cleanupCtx)
 		}
-		if dnsServer != nil {
-			_ = dnsServer.Close(cleanupCtx)
-		}
-
-		if r.cfg.Keep {
-			fmt.Fprintf(os.Stderr, "tunrun: kept namespace %s\n", r.cfg.Namespace)
-			return
-		}
-
-		removeNetnsResolvConf(resolvPath)
-		removeNamespace(cleanupCtx, r.cfg, r.cfg.Namespace)
-		removeLink(cleanupCtx, r.cfg, netPlan.hostIf)
 	}()
-
-	dnsServer, err = StartDNSServer(netPlan.hostIP, r.cfg.DNS, proxy)
-	if err != nil {
-		return fmt.Errorf("start DNS proxy: %w", err)
-	}
-
-	resolvPath, err = writeNetnsResolvConf(r.cfg.Namespace, netPlan.hostIP)
-	if err != nil {
-		return fmt.Errorf("write namespace resolv.conf: %w", err)
-	}
 
 	var relayPort int
 	relay, relayPort, err = StartRelay(netPlan.hostIP, proxy)
@@ -100,105 +88,79 @@ func (r *Runner) Run(ctx context.Context, command []string) error {
 	if err != nil {
 		return err
 	}
+	hostNetNS, err := currentNetNSID()
+	if err != nil {
+		return err
+	}
 
 	if r.cfg.Verbose {
-		fmt.Fprintf(os.Stderr, "tunrun: proxy_source=%s namespace=%s target_uid=%s host_if=%s ns_if=%s relay=%s:%d dns=%s:53\n",
-			r.cfg.ProxySource, r.cfg.Namespace, targetUIDLabel(targetIdentity), netPlan.hostIf, r.cfg.NamespaceIfName, netPlan.hostIP, relayPort, netPlan.hostIP)
+		fmt.Fprintf(os.Stderr, "tunrun: proxy_source=%s namespace=%s target_uid=%s host_if=%s ns_if=%s relay=%s:%d dns=namespace-local:53\n",
+			r.cfg.ProxySource, r.cfg.Namespace, targetUIDLabel(targetIdentity), netPlan.hostIf, r.cfg.NamespaceIfName, netPlan.hostIP, relayPort)
 	}
 
-	engineCmd = exec.CommandContext(ctx,
-		"ip", "netns", "exec", r.cfg.Namespace,
-		exe, "_engine",
-		"-device", "tun://"+r.cfg.TunName,
-		"-proxy", proxy.URLWithEndpoint(netPlan.hostIP, relayPort),
-		"-interface", r.cfg.NamespaceIfName,
+	// Prepare netmgr arguments
+	netmgrArgs := []string{"_netmgr",
+		"-peer-if", netPlan.peerIf,
+		"-ns-if", r.cfg.NamespaceIfName,
+		"-ns-cidr", netPlan.nsCIDR,
+		"-host-ip", netPlan.hostIP,
+		"-host-netns", hostNetNS,
+		"-dns", r.cfg.DNS,
+		"-tun", r.cfg.TunName,
+		"-tun-address", r.cfg.TunAddress,
 		"-mtu", fmt.Sprint(r.cfg.MTU),
 		"-log-level", r.cfg.LogLevel,
-	)
-	engineCmd.Stdout = os.Stderr
-	engineCmd.Stderr = os.Stderr
-	engineCmd.Env = EnvironmentWithoutProxy(os.Environ())
-	engineCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := engineCmd.Start(); err != nil {
-		return fmt.Errorf("start embedded tun2socks engine: %w", err)
+		"-proxy", proxy.URLWithEndpoint(netPlan.hostIP, relayPort),
+		"-target-path", r.cfg.TargetPath,
 	}
-
-	if err := r.waitForTun(ctx); err != nil {
-		return err
+	if r.cfg.Verbose {
+		netmgrArgs = append(netmgrArgs, "-v")
 	}
-
-	if err := r.configureTun(ctx); err != nil {
-		return err
-	}
-
-	appCode := r.runCommand(ctx, command, targetIdentity)
-
-	if appCode != 0 {
-		return ExitError{Code: appCode}
-	}
-	return nil
-}
-
-func (r *Runner) configureTun(ctx context.Context) error {
-	ip := ipTool{verbose: r.cfg.Verbose}
-	if err := ip.run(ctx, "netns", "exec", r.cfg.Namespace, "ip", "addr", "replace", r.cfg.TunAddress, "dev", r.cfg.TunName); err != nil {
-		return fmt.Errorf("configure TUN address: %w", err)
-	}
-	if err := ip.run(ctx, "netns", "exec", r.cfg.Namespace, "ip", "link", "set", r.cfg.TunName, "up"); err != nil {
-		return fmt.Errorf("bring TUN up: %w", err)
-	}
-	if err := ip.run(ctx, "netns", "exec", r.cfg.Namespace, "ip", "route", "replace", "default", "dev", r.cfg.TunName); err != nil {
-		return fmt.Errorf("set namespace default route: %w", err)
-	}
-	return nil
-}
-
-func (r *Runner) runCommand(ctx context.Context, args []string, identity TargetIdentity) int {
-	execArgs := []string{"netns", "exec", r.cfg.Namespace}
-	exe, err := os.Executable()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "tunrun: locate executable: %v\n", err)
-		return 127
-	}
-	execArgs = append(execArgs, exe, "_exec")
-	if identity.Valid {
-		execArgs = append(execArgs,
-			"-uid", fmt.Sprint(identity.UID),
-			"-gid", fmt.Sprint(identity.GID),
-			"-groups", FormatGroupList(identity.Groups),
+	if targetIdentity.Valid {
+		netmgrArgs = append(netmgrArgs,
+			"-uid", fmt.Sprint(targetIdentity.UID),
+			"-gid", fmt.Sprint(targetIdentity.GID),
+			"-groups", FormatGroupList(targetIdentity.Groups),
 		)
 	}
-	execArgs = append(execArgs, "--")
-	execArgs = append(execArgs, args...)
+	netmgrArgs = append(netmgrArgs, "--")
+	netmgrArgs = append(netmgrArgs, command...)
 
-	cmd := exec.CommandContext(ctx, "ip", execArgs...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Env = TargetEnvironmentWithPath(os.Environ(), identity, r.cfg.TargetPath)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	netmgrCmd := exec.CommandContext(ctx, exe, netmgrArgs...)
+	netmgrCmd.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags: syscall.CLONE_NEWNET,
+		Pdeathsig:  syscall.SIGKILL,
+	}
+	netmgrCmd.Stdin = os.Stdin
+	netmgrCmd.Stdout = os.Stdout
+	netmgrCmd.Stderr = os.Stderr
 
-	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "tunrun: start command: %v\n", err)
-		return 127
+	if err := netmgrCmd.Start(); err != nil {
+		return fmt.Errorf("start netmgr: %w", err)
 	}
 
-	err = cmd.Wait()
+	// Move peer veth into netmgr's namespace
+	peerLink, err := netlink.LinkByName(netPlan.peerIf)
+	if err != nil {
+		_ = netmgrCmd.Process.Kill()
+		return fmt.Errorf("get peer link: %w", err)
+	}
+	if err := netlink.LinkSetNsPid(peerLink, netmgrCmd.Process.Pid); err != nil {
+		_ = netmgrCmd.Process.Kill()
+		return fmt.Errorf("move peer veth to netmgr: %w", err)
+	}
+
+	err = netmgrCmd.Wait()
 	if err == nil {
-		return 0
-	}
-	if ctx.Err() != nil {
-		terminateProcessGroup(cmd.Process)
-		return 130
+		return nil
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
-			return status.ExitStatus()
+			return ExitError{Code: status.ExitStatus()}
 		}
 	}
-	fmt.Fprintf(os.Stderr, "tunrun: command failed: %v\n", err)
-	return 1
+	return err
 }
 
 func targetUIDLabel(identity TargetIdentity) string {
@@ -208,33 +170,30 @@ func targetUIDLabel(identity TargetIdentity) string {
 	return fmt.Sprintf("%d", identity.UID)
 }
 
-func (r *Runner) waitForTun(ctx context.Context) error {
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		check := exec.CommandContext(ctx, "ip", "netns", "exec", r.cfg.Namespace, "ip", "link", "show", r.cfg.TunName)
-		if check.Run() == nil {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-	return fmt.Errorf("timed out waiting for %s; check embedded engine logs above", r.cfg.TunName)
+type namespaceNetwork struct {
+	hostIf   string
+	peerIf   string
+	nsIf     string
+	hostCIDR string
+	nsCIDR   string
+	hostIP   string
 }
 
 func newNamespaceNetwork(cfg Config) namespaceNetwork {
 	id := shortID()
-	octet := 64 + rand.IntN(128)
+	// Map pid to 169.254.y.z/30 where y is 64..127 to avoid collisions
+	// 64 * 256 / 4 = 4096 subnets
+	pid := os.Getpid()
+	index := pid % 4096
+	y := 64 + (index / 64)
+	z := (index % 64) * 4
 	return namespaceNetwork{
-		nsName:   cfg.Namespace,
 		hostIf:   "trh" + id,
 		peerIf:   "trp" + id,
 		nsIf:     cfg.NamespaceIfName,
-		hostCIDR: fmt.Sprintf("169.254.%d.1/30", octet),
-		nsCIDR:   fmt.Sprintf("169.254.%d.2/30", octet),
-		hostIP:   fmt.Sprintf("169.254.%d.1", octet),
+		hostCIDR: fmt.Sprintf("169.254.%d.%d/30", y, z+1),
+		nsCIDR:   fmt.Sprintf("169.254.%d.%d/30", y, z+2),
+		hostIP:   fmt.Sprintf("169.254.%d.%d", y, z+1),
 	}
 }
 

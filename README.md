@@ -8,6 +8,7 @@ It is a single Go binary. It creates:
 - a dedicated network namespace for the app
 - a veth link between the host and that namespace
 - a host-side relay to your upstream HTTP or SOCKS5 proxy
+- nftables rules inside the namespace to redirect DNS to a local DNS proxy
 - an embedded tun2socks engine inside the namespace
 
 The app sees a normal network stack whose default route points at the TUN
@@ -18,7 +19,6 @@ dials the upstream proxy through the veth escape path.
 
 - Linux with network namespace support
 - root or `CAP_NET_ADMIN`
-- `ip` from iproute2
 - an upstream `socks5://` or `http://` proxy reachable from the host
 
 ## Build
@@ -54,25 +54,23 @@ Useful options:
 
 ```sh
 sudo ./tunrun -v -proxy socks5://127.0.0.1:1080 -- curl https://example.com/
-sudo ./tunrun -keep -proxy socks5://127.0.0.1:1080 -- bash
 ```
-
-`-keep` leaves the namespace in place for inspection.
 
 ## Cleanup
 
 By default, `tunrun` cleans up after the target command exits. It stops the
-embedded engine, closes the DNS proxy and host relay, removes the namespace
-`resolv.conf`, deletes the network namespace, and removes the host veth link.
-
-Use `-keep` only when you want to inspect the namespace after exit.
+embedded engine, closes the host relay, lets the anonymous network namespace
+disappear, and removes the host veth link.
 
 ## Current scope
 
 `tunrun` targets TCP applications plus DNS, and generic UDP is supported when
-the upstream proxy is SOCKS5 and permits UDP ASSOCIATE. It writes a
-namespace-specific `resolv.conf` and runs a small DNS-over-TCP proxy on the host
-veth address, so DNS queries are also resolved through the configured proxy.
+the upstream proxy is SOCKS5 and permits UDP ASSOCIATE. It leaves
+`/etc/resolv.conf` untouched and redirects UDP/TCP DNS traffic inside the
+anonymous namespace to a local DNS-over-TCP proxy. It also maps IPv4
+nameservers from `/etc/resolv.conf` onto loopback inside that anonymous
+namespace, so DNS queries are resolved through the configured proxy without
+modifying the real resolver file.
 
 HTTP proxies still cover TCP plus DNS only because plain HTTP CONNECT does not
 provide a generic UDP relay.

@@ -18,7 +18,9 @@ func RunExec(ctx context.Context, cfg ExecConfig, args []string) int {
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
 
-	attr := &syscall.SysProcAttr{}
+	attr := &syscall.SysProcAttr{
+		Pdeathsig: syscall.SIGKILL,
+	}
 	if _, err := unix.IoctlGetTermios(int(os.Stdin.Fd()), unix.TCGETS); err == nil {
 		attr.Foreground = true
 		attr.Ctty = int(os.Stdin.Fd())

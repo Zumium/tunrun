@@ -12,13 +12,15 @@ Key paths:
 
 - `cmd/tunrun/main.go`: CLI entrypoint and hidden internal subcommands.
 - `internal/tunrun/runner.go`: namespace lifecycle and target command launch.
-- `internal/tunrun/ip.go`: `iproute2` namespace/veth/resolv.conf helpers.
+- `internal/tunrun/netmgr.go`: anonymous namespace-internal network setup.
+- `internal/tunrun/dnsnat.go`: nftables DNS redirect rules inside the namespace.
 - `internal/tunrun/engine.go`: embedded tun2socks engine.
 - `internal/tunrun/sudo.go`: automatic sudo re-exec path.
 - `internal/tunrun/exec.go`: namespace-internal target command launcher.
 - `internal/tunrun/identity.go`: sudo caller UID/GID/group detection.
 - `internal/tunrun/proxy.go`: proxy parsing and environment handling.
-- `internal/tunrun/dns.go`: host-side DNS-over-TCP proxy.
+- `internal/tunrun/dns.go`: DNS-over-TCP proxy used inside the namespace.
+- `internal/tunrun/resolv.go`: resolv.conf nameserver parsing for namespace-local DNS aliases.
 
 ## Commands
 
@@ -36,8 +38,8 @@ Run `gofmt` on touched Go files before testing.
 ## Integration Testing
 
 Full behavior requires root privileges because the tool creates network
-namespaces, veth links, TUN devices, `/etc/netns/<ns>/resolv.conf`, and a DNS
-listener on port 53.
+namespaces, veth links, TUN devices, nftables DNS redirect rules, and DNS
+listeners on port 53.
 
 Preferred integration smoke test:
 
@@ -58,7 +60,6 @@ Cleanup checks:
 ```sh
 sudo ip netns list
 sudo ip -o link show
-sudo find /etc/netns -maxdepth 2 -path '/etc/netns/tunrun-*' -print
 sudo find /run/netns -maxdepth 1 -name 'tunrun-*' -print
 ```
 
@@ -68,14 +69,14 @@ There should be no `tunrun-*`, `trh*`, or `trp*` leftovers after a normal run.
 
 - Keep the deliverable as one binary. Do not add runtime dependencies on
   external proxy engines such as `sing-box`.
-- Keep `ip` from iproute2 as the only expected system command dependency.
+- Do not add runtime dependencies on system command binaries for namespace,
+  routing, or DNS setup; use Go netlink/nftables APIs instead.
 - The root process may configure networking, but the target application must run
   as the sudo caller when `SUDO_UID`/`SUDO_GID` are present.
 - Do not pass proxy environment variables into the target command. The app
   should be forced through the namespace TUN path.
 - Preserve automatic cleanup on all error paths. If a resource is created, make
   sure it is registered for deferred cleanup.
-- `-keep` is for inspection and may intentionally leave the namespace around.
 
 ## Current Scope
 

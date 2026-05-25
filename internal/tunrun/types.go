@@ -15,7 +15,6 @@ type Config struct {
 	MTU             int
 	LogLevel        string
 	TargetPath      string
-	Keep            bool
 	Verbose         bool
 }
 

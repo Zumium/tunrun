@@ -39,6 +39,17 @@ If `-proxy` is omitted, `tunrun` reads the first non-empty value from:
 `ALL_PROXY`, `all_proxy`, `HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY`,
 `http_proxy`, `SOCKS_PROXY`, `socks_proxy`.
 
+You can also set the proxy in your home config file:
+
+```toml
+# ~/.config/tunrun/config.toml
+proxy = "socks5://127.0.0.1:1080"
+```
+
+Proxy precedence is: command-line `-proxy`, then
+`~/.config/tunrun/config.toml`, then proxy environment variables. When
+`tunrun` is invoked through `sudo`, it reads the sudo caller's home config.
+
 The target command runs with those proxy variables removed from its environment
 so traffic is forced through the namespace TUN path instead of app-level proxy
 settings.

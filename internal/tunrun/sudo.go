@@ -10,7 +10,7 @@ import (
 	"syscall"
 )
 
-func ElevateWithSudo(originalArgs []string, proxyURL string) error {
+func ElevateWithSudo(originalArgs []string, proxyURL, proxySource string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -25,7 +25,7 @@ func ElevateWithSudo(originalArgs []string, proxyURL string) error {
 	}
 	defer os.Remove(proxyFile)
 
-	args := sudoCommandArgs(exe, proxyFile, originalArgs, os.Getenv("PATH"))
+	args := sudoCommandArgs(exe, proxyFile, proxySourceBeforeSudo(proxySource), originalArgs, os.Getenv("PATH"))
 
 	cmd := exec.Command("sudo", args...)
 	cmd.Stdin = os.Stdin
@@ -49,14 +49,30 @@ func ElevateWithSudo(originalArgs []string, proxyURL string) error {
 	return err
 }
 
-func sudoCommandArgs(exe, proxyFile string, originalArgs []string, targetPath string) []string {
+func sudoCommandArgs(exe, proxyFile, proxySource string, originalArgs []string, targetPath string) []string {
 	args := []string{exe, "_sudo", "-proxy-file", proxyFile}
+	if proxySource != "" {
+		args = append(args, "-proxy-source", proxySource)
+	}
 	if targetPath != "" {
 		args = append(args, "-target-path", targetPath)
 	}
 	args = append(args, "--")
 	args = append(args, originalArgs...)
 	return args
+}
+
+func proxySourceBeforeSudo(source string) string {
+	switch source {
+	case ConfigProxySource:
+		return "config file before sudo"
+	case "-proxy":
+		return "-proxy"
+	case "":
+		return "environment before sudo"
+	default:
+		return "environment before sudo"
+	}
 }
 
 func writeProxyFile(proxyURL string) (string, error) {

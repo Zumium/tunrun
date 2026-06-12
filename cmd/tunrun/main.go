@@ -83,16 +83,17 @@ func runMain(args []string, proxyOverride, proxyOverrideSource, targetPath strin
 	if proxyOverride != "" {
 		cfg.ProxyURL = proxyOverride
 		cfg.ProxySource = proxyOverrideSource
-	} else if cfg.ProxyURL == "" {
-		proxyURL, proxySource, ok := tunrun.ProxyFromEnvironment(os.Environ())
+	} else {
+		resolved, ok, err := tunrun.ResolveProxy(cfg.ProxyURL, flagWasSet(fs, "proxy"), os.Environ())
+		if err != nil {
+			return err
+		}
 		if !ok {
 			fs.Usage()
-			return fmt.Errorf("missing -proxy and no proxy environment variable found")
+			return fmt.Errorf("missing -proxy, config proxy, and proxy environment variable")
 		}
-		cfg.ProxyURL = proxyURL
-		cfg.ProxySource = proxySource
-	} else {
-		cfg.ProxySource = "-proxy"
+		cfg.ProxyURL = resolved.URL
+		cfg.ProxySource = resolved.Source
 	}
 
 	if cfg.Namespace == "" {
@@ -109,7 +110,7 @@ func runMain(args []string, proxyOverride, proxyOverrideSource, targetPath strin
 	defer stop()
 
 	if os.Geteuid() != 0 && allowElevate {
-		return tunrun.ElevateWithSudo(args, cfg.ProxyURL)
+		return tunrun.ElevateWithSudo(args, cfg.ProxyURL, cfg.ProxySource)
 	}
 
 	runner := tunrun.NewRunner(cfg)
@@ -121,8 +122,10 @@ func runSudo(args []string) error {
 	fs.SetOutput(os.Stderr)
 
 	var proxyFile string
+	var proxySource string
 	var targetPath string
 	fs.StringVar(&proxyFile, "proxy-file", "", "proxy URL file")
+	fs.StringVar(&proxySource, "proxy-source", "environment before sudo", "proxy source captured before sudo")
 	fs.StringVar(&targetPath, "target-path", "", "target command PATH captured before sudo")
 	if err := fs.Parse(args); err != nil {
 		return tunrun.ExitError{Code: 2}
@@ -135,7 +138,17 @@ func runSudo(args []string) error {
 	if err != nil {
 		return err
 	}
-	return runMain(fs.Args(), proxyURL, "environment before sudo", targetPath, false)
+	return runMain(fs.Args(), proxyURL, proxySource, targetPath, false)
+}
+
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	wasSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			wasSet = true
+		}
+	})
+	return wasSet
 }
 
 func runEngine(args []string) error {
